@@ -2,19 +2,19 @@
 
 **Longitudinal data collection instrument for vaporized N,N-DMT used as an acute abortive treatment for cluster headache**
 
-[![DOI](https://zenodo.org/badge/DOI/PLACEHOLDER.svg)](https://doi.org/PLACEHOLDER)
+[![DOI](https://zenodo.org/badge/DOI/1302987762.svg)](https://doi.org/1302987762)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![PS27](https://img.shields.io/badge/Target-Psychedelic%20Science%202027-purple)](https://psychedelicscience.org)
 [![Validation](https://img.shields.io/badge/Status-Community%20Validation-orange)]()
 
-**→ [Open the tracker](https://USERNAME.github.io/ch-dmt-abort-tracker)**
+**→ [Open the tracker](https://CHARC-ORG.github.io/ch-dmt-abort-tracker)**
 
 ---
 
 ## What this is
 
 This is a **research data collection instrument**, distinct from the companion 
-[educational dose estimator](https://github.com/USERNAME/nndmt-ch-dose-estimator).
+[educational dose estimator](https://github.com/CHARC-ORG/nndmt-ch-dose-estimator).
 
 Where the dose estimator helps anyone understand their device setup, this tracker
 is built to do one thing: collect structured, longitudinal data on real-world nnDMT
@@ -173,12 +173,12 @@ Feedback actively sought on:
 
 ```bibtex
 @software{king_2025_ch_dmt_tracker,
-  author    = {[Last Name], Eric},
+  author    = {[Frey], King},
   title     = {CH DMT Abort Tracker},
   version   = {1.0.0},
-  year      = {2025},
+  year      = {2026},
   publisher = {Zenodo},
-  doi       = {PLACEHOLDER},
+  doi       = {21399191},
   url       = {https://github.com/USERNAME/ch-dmt-abort-tracker}
 }
 ```
