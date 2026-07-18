@@ -179,7 +179,7 @@ Feedback actively sought on:
   year      = {2026},
   publisher = {Zenodo},
   doi       = {21399191},
-  url       = {https://github.com/USERNAME/ch-dmt-abort-tracker}
+  url       = {https://github.com/CHARC-ORGE/ch-dmt-abort-tracker}
 }
 ```
 
