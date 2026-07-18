@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CH nnDMT Abort Tracker — PS27 Research Data Collection</title>
+  <meta name="description" content="Longitudinal abort attempt tracker for nnDMT cluster headache research. Participant ID system, clinical outcome logging, community data pool. PS27 2027." />
+  <meta name="robots" content="noindex" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #f8f8f7;
+      --surface: #ffffff;
+      --border: #e0dfd9;
+      --text: #0b0b0b;
+      --text-sec: #52514e;
+      --text-muted: #898781;
+      --blue: #2a78d6;
+      --green: #1baf7a;
+      --amber: #eda100;
+      --red: #e34948;
+      --purple: #534ab7;
+    }
+
+    body {
+      background: var(--bg);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    #root {
+      max-width: 780px;
+      margin: 0 auto;
+      padding: 0 1rem 3rem;
+    }
+
+    .site-header {
+      padding: 14px 0 12px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 18px;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .site-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.01em;
+    }
+
+    .site-sub {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 3px;
+      line-height: 1.5;
+    }
+
+    .site-badges {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .badge {
+      font-size: 10px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .badge-purple { background: #eeedfe; color: #3c3489; }
+    .badge-amber  { background: #faeeda; color: #854f0b; }
+    .badge-green  { background: #e1f5ee; color: #0f6e56; }
+
+    .disclaimer {
+      background: #faeeda;
+      border: 1px solid var(--amber);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 12px;
+      color: #854f0b;
+      line-height: 1.6;
+      margin-bottom: 16px;
+    }
+
+    .site-footer {
+      margin-top: 2.5rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.8;
+    }
+
+    .site-footer a {
+      color: var(--blue);
+      text-decoration: none;
+    }
+
+    /* Loading state */
+    #app:empty::after {
+      content: 'Loading tracker…';
+      display: block;
+      padding: 2rem;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+
+    /* Storage fallback — if window.storage unavailable, use localStorage */
+  </style>
+</head>
+<body>
+<div id="root">
+
+  <div class="site-header">
+    <div>
+      <div class="site-title">CH nnDMT Abort Tracker</div>
+      <div class="site-sub">
+        Longitudinal data collection instrument · ClusterInfo.org / ClusterBuds<br>
+        PS27 (Psychedelic Science 2027) · Built by Eric "ChickenDaddy"
+      </div>
+    </div>
+    <div class="site-badges">
+      <span class="badge badge-purple">PS27 Research</span>
+      <span class="badge badge-green">v1.0.0</span>
+      <span class="badge badge-amber">Not medical advice</span>
+    </div>
+  </div>
+
+  <div class="disclaimer">
+    <strong>Research data collection instrument.</strong> This tool logs your abort attempts
+    to build a community dataset for Psychedelic Science 2027. Your participant ID is anonymous —
+    never linked to your name or contact information. DMT is a Schedule I substance in the US
+    and regulated in most jurisdictions. Harm reduction and research only.
+  </div>
+
+  <div id="app"></div>
+
+  <div class="site-footer">
+    <strong>CH nnDMT Abort Tracker</strong> · Longitudinal research instrument for cluster headache community ·
+    <a href="https://github.com/USERNAME/ch-dmt-abort-tracker" target="_blank">GitHub</a> ·
+    <a href="https://github.com/USERNAME/nndmt-ch-dose-estimator" target="_blank">Companion dose estimator</a> ·
+    MIT License · Not a medical device · Harm reduction only
+  </div>
+
+</div>
+
+<!-- Storage compatibility shim: provides window.storage API using localStorage as backend -->
+<script>
+  window.storage = {
+    get: async function(key) {
+      try {
+        const val = localStorage.getItem(key);
+        return val !== null ? { key, value: val, shared: false } : null;
+      } catch(e) { return null; }
+    },
+    set: async function(key, value) {
+      try {
+        localStorage.setItem(key, value);
+        return { key, value, shared: false };
+      } catch(e) { return null; }
+    },
+    delete: async function(key) {
+      try {
+        localStorage.removeItem(key);
+        return { key, deleted: true, shared: false };
+      } catch(e) { return null; }
+    },
+    list: async function(prefix) {
+      try {
+        const keys = Object.keys(localStorage)
+          .filter(k => !prefix || k.startsWith(prefix));
+        return { keys, prefix, shared: false };
+      } catch(e) { return { keys: [] }; }
+    }
+  };
+</script>
+
+<!-- React + Babel -->
+<script type="text/babel" src="nndmt_calculator_with_db.jsx"></script>
+<script>
+  // Wait for Babel to finish transpiling then mount
+  function tryMount(attempts) {
+    if (typeof App !== 'undefined') {
+      const container = document.getElementById('app');
+      const root = ReactDOM.createRoot(container);
+      root.render(React.createElement(App));
+    } else if (attempts > 0) {
+      setTimeout(() => tryMount(attempts - 1), 200);
+    } else {
+      document.getElementById('app').innerHTML =
+        '<p style="padding:2rem;color:#a32d2d;text-align:center;">⚠ Failed to load tracker. Try refreshing the page.</p>';
+    }
+  }
+  window.addEventListener('load', () => tryMount(20));
+</script>
+
+</body>
+</html>

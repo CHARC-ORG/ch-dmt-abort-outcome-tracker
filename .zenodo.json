@@ -1,0 +1,47 @@
+{
+  "title": "CH DMT Abort Tracker",
+  "description": "Longitudinal data collection instrument for vaporized N,N-dimethyltryptamine (DMT) used as an acute abortive treatment for cluster headache. Captures device parameters, estimated bioavailable dose via 7-variable pharmacokinetic model, onset timing (shadow through peak), Kip scale ratings at first inhale and attack peak, abort outcome (7-tier scale), time to pain change, psychedelic intensity (0-10), sitter presence, and comprehensive physical and psychological adverse effect checklists (14 and 13 options respectively). Anonymous participant ID system (3-word passphrase, SHA-256 hashed for community pool) enables longitudinal within-person data across repeated abort attempts. Companion research instrument to the educational CH DMT Dose Estimator (separate DOI). Designed to support PS27 (Psychedelic Science 2027) presentation and inform future clinical trial protocol design for DMT in cluster headache.",
+  "upload_type": "software",
+  "access_right": "open",
+  "license": "mit-license",
+  "creators": [
+    {
+      "name": "[LAST NAME], Eric",
+      "affiliation": "ClusterInfo.org / ClusterBuds"
+    }
+  ],
+  "keywords": [
+    "cluster headache",
+    "N,N-dimethyltryptamine",
+    "DMT",
+    "harm reduction",
+    "psychedelics",
+    "longitudinal research",
+    "adverse effects",
+    "patient community research",
+    "Psychedelic Science 2027",
+    "PS27",
+    "dose estimation",
+    "vaporization",
+    "cluster headache abort",
+    "tryptamines"
+  ],
+  "related_identifiers": [
+    {
+      "relation": "isCitedBy",
+      "identifier": "10.1080/02791072.2015.1107664",
+      "scheme": "doi",
+      "resource_type": "publication-article"
+    },
+    {
+      "relation": "isCitedBy",
+      "identifier": "10.1001/archpsyc.1994.03950020009001",
+      "scheme": "doi",
+      "resource_type": "publication-article"
+    }
+  ],
+  "communities": [
+    {"identifier": "zenodo"}
+  ],
+  "notes": "Companion research data collection instrument to the CH DMT Dose Estimator (separate Zenodo record). This tool is for research and harm reduction only. Not a medical device. DMT is regulated in most jurisdictions."
+}

@@ -1,0 +1,59 @@
+cff-version: 1.2.0
+message: "If you use this research instrument in your work, please cite it using these metadata."
+type: software
+title: "CH DMT Abort Tracker"
+abstract: >
+  Longitudinal data collection instrument for vaporized N,N-dimethyltryptamine (DMT)
+  used as an acute abortive treatment for cluster headache. Captures device parameters,
+  estimated bioavailable dose via 7-variable pharmacokinetic model, onset timing,
+  Kip scale ratings at time of use and at attack peak, abort outcome (7-tier scale),
+  time to pain change, psychedelic intensity, sitter presence, and physical and
+  psychological adverse effects. Includes anonymous participant ID system for
+  longitudinal within-person data across repeated abort attempts. Designed to support
+  PS27 (Psychedelic Science 2027) and future clinical trial protocol design.
+authors:
+  - family-names: "[LAST NAME]"
+    given-names: "Eric"
+    alias: "ChickenDaddy"
+    affiliation: "ClusterInfo.org / ClusterBuds"
+version: "1.0.0"
+date-released: "2025-07-01"
+license: MIT
+repository-code: "https://github.com/USERNAME/ch-dmt-abort-tracker"
+url: "https://USERNAME.github.io/ch-dmt-abort-tracker"
+keywords:
+  - cluster headache
+  - DMT
+  - N,N-dimethyltryptamine
+  - harm reduction
+  - psychedelics
+  - longitudinal research
+  - adverse effects
+  - patient community research
+  - Psychedelic Science 2027
+  - PS27
+  - cluster headache abort
+  - dose estimation
+references:
+  - type: article
+    title: "Dose-response study of N,N-dimethyltryptamine in humans"
+    authors:
+      - family-names: Strassman
+        given-names: "Rick J."
+      - family-names: Qualls
+        given-names: "Clifford R."
+    journal: "Archives of General Psychiatry"
+    volume: 51
+    issue: 2
+    year: 1994
+    doi: "10.1001/archpsyc.1994.03950020009001"
+  - type: article
+    title: "Indoleamine hallucinogens in cluster headache: Results of the Clusterbusters medication use survey"
+    authors:
+      - family-names: Schindler
+        given-names: "Emmanuelle A.D."
+    journal: "Journal of Psychoactive Drugs"
+    volume: 47
+    issue: 5
+    year: 2015
+    doi: "10.1080/02791072.2015.1107664"

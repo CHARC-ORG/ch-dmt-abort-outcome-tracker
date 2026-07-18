@@ -1,0 +1,1046 @@
+
+// nnDMT CH Abort Dose Estimator — with persistent session database
+// Participant ID system, longitudinal logging, community aggregate view
+// For harm reduction research and PS27 data collection
+
+import { useState, useEffect, useCallback } from "react";
+
+// ─── Device model ──────────────────────────────────────────────────────────
+const podProfiles = {
+  xros_pro: { label: "XROS Pro (5–28W)", dW: { 0.4:22, 0.6:18, 0.8:16, 1.0:12, 1.2:10 } },
+  xros4:    { label: "XROS 4 (5–20W)",  dW: { 0.4:18, 0.6:16, 0.8:14, 1.0:11, 1.2:9  } },
+  xros3:    { label: "XROS 3 (11W)",    dW: { 0.4:11, 0.6:11, 0.8:11, 1.0:11, 1.2:11 } },
+  xlim_sq2: { label: "Xlim SQ2 (5–30W)",dW: { 0.4:25, 0.6:20, 0.8:16, 1.0:12, 1.2:10 } },
+  calib_g3: { label: "Caliburn G3 (15W)",dW:{ 0.4:14, 0.6:13, 0.8:12, 1.0:10, 1.2:8  } },
+  vinci3:   { label: "Vinci 3 (5–50W)", dW: { 0.4:30, 0.6:25, 0.8:20, 1.0:15, 1.2:12 } },
+};
+
+const erigProfiles = {
+  ispire_daab:      { label: "Ispire Daab — induction TC, all-glass", tc: true,  eff: 0.94 },
+  puffco_peak:      { label: "Puffco Peak Pro — ceramic TC",           tc: true,  eff: 0.88 },
+  dr_dabber:        { label: "Dr. Dabber Switch — induction",          tc: true,  eff: 0.91 },
+  yocan_orbit_low:  { label: "Yocan Orbit 3.4V / White ★ safe",       tc: false, eff: 0.71, tempC: 210 },
+  yocan_orbit_mid:  { label: "Yocan Orbit 3.7V / Blue ⚠ combustion",  tc: false, eff: 0.55, tempC: 234 },
+  yocan_orbit_high: { label: "Yocan Orbit 4.0V / Green ✗ avoid",      tc: false, eff: 0.38, tempC: 260 },
+  yocan_evolve:     { label: "Yocan Evolve Plus — quartz dual coil",   tc: false, eff: 0.65, tempC: 220 },
+};
+
+const sohmProfiles = {
+  rda_ss_tc:  { label: "RDA + SS316L mesh (TC)",          coil: "ss316l",  eff: 0.92 },
+  rda_ceramic:{ label: "RDA + ceramic coil (VW)",          coil: "ceramic", eff: 0.87 },
+  rda_cotton: { label: "RDA + cotton wick (VW)",           coil: "cotton",  eff: 0.58 },
+  gk_z2:      { label: "GeekVape Z2 Tank (SS mesh)",       coil: "ss316l",  eff: 0.86 },
+  gk_zeus:    { label: "GeekVape Zeus (SS mesh)",          coil: "ss316l",  eff: 0.85 },
+  hellvape:   { label: "Hellvape Dead Rabbit V3 RTA",      coil: "ss316l",  eff: 0.85 },
+};
+
+function wToTemp(w) { return Math.round(80 + w * 4.5); }
+
+function tempEfficiency(tempC, material) {
+  const base = material === "ss316l" || material === "ceramic" ? 0.90
+             : material === "quartz" ? 0.72 : 0.42;
+  if (tempC < 150) return base * 0.33;
+  if (tempC < 160) return base * 0.72;
+  if (tempC <= 185) return base;
+  if (tempC <= 215) return base * 0.89;
+  if (tempC <= 230) return base * 0.72;
+  if (tempC <= 260) return base * 0.54;
+  return base * 0.30;
+}
+
+function doseZone(mg) {
+  if (mg < 5)  return { label: "Sub-threshold", color: "#1baf7a", cls: "sub" };
+  if (mg < 15) return { label: "Abort window",  color: "#2a78d6", cls: "abort" };
+  if (mg < 25) return { label: "Moderate",      color: "#eda100", cls: "mod" };
+  return               { label: "Breakthrough",  color: "#e34948", cls: "break" };
+}
+
+// ─── ID generator ─────────────────────────────────────────────────────────
+const ADJS = ["amber","arctic","bold","calm","cedar","copper","coral","dark","deep","ember","fern","gold","iron","jade","lime","lunar","maple","navy","north","ocean","pine","rust","sage","salt","silver","slate","solar","stone","swift","terra","tide","warm","west","wind"];
+const NOUNS = ["anchor","anvil","basin","blade","brook","canyon","cliff","cloud","crest","delta","dome","dune","forge","gate","glen","gulf","harbor","hill","hollow","lake","ledge","marsh","mesa","orbit","peak","plain","pool","quarry","reef","ridge","river","shore","slope","span","spring","star","summit","surge","trail","vale","vault","wave"];
+const NUMS = ["one","two","three","four","five","six","seven","eight","nine","ten"];
+
+function generatePassphrase() {
+  const r = (arr) => arr[Math.floor(Math.random() * arr.length)];
+  return `${r(ADJS)}-${r(NOUNS)}-${r(NUMS)}`;
+}
+
+async function hashPassphrase(pid) {
+  try {
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(pid + "-ch-dmt-v1"));
+    return Array.from(new Uint8Array(buf)).slice(0, 8).map(b => b.toString(16).padStart(2,"0")).join("");
+  } catch { return pid.split("").reduce((a,c) => a + c.charCodeAt(0), 0).toString(16); }
+}
+
+// ─── Storage keys ──────────────────────────────────────────────────────────
+const KEY_SESSIONS = "nndmt_sessions_v1";
+const KEY_POOL     = "nndmt_pool_v1";
+const KEY_PID      = "nndmt_pid_v1";
+
+// ─── Styles ───────────────────────────────────────────────────────────────
+const S = {
+  app: { fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", fontSize: 14, color: "#0b0b0b", padding: "1rem 0", maxWidth: 740 },
+  tabs: { display: "flex", gap: 3, borderBottom: "1px solid #e0dfd9", marginBottom: 18, flexWrap: "wrap" },
+  tab: { fontSize: 13, padding: "6px 13px", borderRadius: "6px 6px 0 0", cursor: "pointer", color: "#52514e", border: "1px solid transparent", borderBottom: "none", position: "relative", bottom: -1, background: "transparent" },
+  tabActive: { color: "#0b0b0b", borderColor: "#e0dfd9", background: "#fff", fontWeight: 500 },
+  card: { background: "#fff", border: "1px solid #e0dfd9", borderRadius: 12, padding: "1rem 1.25rem", marginBottom: 10 },
+  label: { display: "block", fontSize: 12, color: "#52514e", marginBottom: 3, marginTop: 9 },
+  select: { width: "100%", fontSize: 13, padding: "5px 7px", border: "1px solid #ccc", borderRadius: 6, background: "#fff" },
+  input: { width: "100%", fontSize: 13, padding: "5px 7px", border: "1px solid #ccc", borderRadius: 6, background: "#fff" },
+  textarea: { width: "100%", fontSize: 12, padding: "6px 8px", border: "1px solid #ccc", borderRadius: 6, minHeight: 56, resize: "vertical", fontFamily: "inherit" },
+  grid2: { display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 10, marginBottom: 10 },
+  cl: { fontSize: 10, fontWeight: 600, color: "#898781", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 10 },
+  btn: { fontSize: 13, padding: "7px 15px", borderRadius: 7, cursor: "pointer", border: "1px solid #ccc", background: "transparent", color: "#0b0b0b" },
+  btnPrimary: { background: "#2a78d6", color: "#fff", border: "1px solid #2a78d6" },
+  btnSuccess: { background: "#e1f5ee", color: "#0f6e56", border: "1px solid #1baf7a" },
+  btnDanger: { background: "transparent", color: "#a32d2d", border: "1px solid #e34948" },
+  btnSm: { fontSize: 11, padding: "3px 9px" },
+  mono: { fontFamily: "'JetBrains Mono', 'Fira Code', monospace" },
+  pill: { fontSize: 10, padding: "2px 8px", borderRadius: 20, background: "#f0efec", color: "#52514e", display: "inline-block", margin: "0 3px 3px 0" },
+  note: { fontSize: 11, color: "#898781", lineHeight: 1.6, marginTop: 8 },
+  warn: { background: "#faeeda", border: "1px solid #eda100", borderRadius: 7, padding: "7px 11px", fontSize: 12, color: "#854f0b", marginTop: 8, lineHeight: 1.6 },
+  haz:  { background: "#fcebeb", border: "1px solid #e34948", borderRadius: 7, padding: "7px 11px", fontSize: 12, color: "#a32d2d", marginTop: 6, lineHeight: 1.6 },
+  stat: { background: "#f8f8f6", borderRadius: 8, padding: "10px 12px" },
+  empty: { textAlign: "center", padding: "2rem", color: "#898781", fontSize: 13 },
+  idBox: { background: "#f8f8f6", border: "1px solid #e0dfd9", borderRadius: 8, padding: "12px 14px" },
+  idDisplay: { fontFamily: "'JetBrains Mono', monospace", fontSize: 22, fontWeight: 600, color: "#0b0b0b", letterSpacing: "0.06em", margin: "8px 0" },
+};
+
+// ─── Main component ────────────────────────────────────────────────────────
+export default function App() {
+  const [tab, setTab] = useState("calc");
+
+  // Calculator state
+  const [devCat, setDevCat] = useState("510");
+  const [coil510, setCoil510] = useState("ccell");
+  const [res510, setRes510] = useState(1.0);
+  const [volt510, setVolt510] = useState(2.8);
+  const [podDev, setPodDev] = useState("xros_pro");
+  const [podRes, setPodRes] = useState(0.8);
+  const [podW, setPodW] = useState("auto");
+  const [erigDev, setErigDev] = useState("ispire_daab");
+  const [erigTC, setErigTC] = useState(175);
+  const [meshFine, setMeshFine] = useState(0.93);
+  const [meshTemp, setMeshTemp] = useState(200);
+  const [meshMg, setMeshMg] = useState(15);
+  const [sohmDev, setSohmDev] = useState("rda_ss_tc");
+  const [soW, setSoW] = useState(20);
+  const [tcTemp, setTcTemp] = useState(175);
+  const [glassExp, setGlassExp] = useState(0.28);
+  const [cV, setCV] = useState(3.2);
+  const [cR, setCR] = useState(1.0);
+  const [cMat, setCMat] = useState("ceramic");
+  const [vol, setVol] = useState(1.0);
+  const [conc, setConc] = useState(250);
+  const [carrier, setCarrier] = useState(1.0);
+  const [crys, setCrys] = useState(1.0);
+  const [warm, setWarm] = useState(0);
+  const [inhale, setInhale] = useState(0.88);
+  const [pdur, setPdur] = useState(1.0);
+  const [holdT, setHoldT] = useState(0.92);
+  const [puffs, setPuffs] = useState(2);
+  const [interval, setIntervalV] = useState(1.0);
+  const [ppc, setPpc] = useState(40);
+
+  // Log state — expanded clinical fields
+  const [logOnsetToVape, setLogOnsetToVape] = useState("5_15");   // time from attack onset to first inhale
+  const [logKipAtVape, setLogKipAtVape] = useState("8");          // Kip at moment of first inhale
+  const [logKipPeak, setLogKipPeak] = useState("9");              // Kip at peak of this attack
+  const [logOutcome, setLogOutcome] = useState("complete");
+  const [logTimeToEffect, setLogTimeToEffect] = useState("1min"); // time from first inhale to pain change
+  const [logIntensity, setLogIntensity] = useState(4);            // psychedelic intensity 0–10
+  const [logSitter, setLogSitter] = useState("no");
+  const [logPhysical, setLogPhysical] = useState([]);             // physical side effects (multi-select)
+  const [logMental, setLogMental] = useState([]);                 // psychological side effects (multi-select)
+  const [logNotes, setLogNotes] = useState("");
+  const [saveMsg, setSaveMsg] = useState("");
+
+  // Participant ID
+  const [pid, setPid] = useState("");
+  const [pidInput, setPidInput] = useState("");
+  const [generatedId, setGeneratedId] = useState("");
+
+  // Sessions (personal + pool)
+  const [sessions, setSessions] = useState([]);
+  const [pool, setPool] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  // Load from storage on mount
+  useEffect(() => {
+    async function load() {
+      setLoading(true);
+      try {
+        const sr = await window.storage.get(KEY_SESSIONS); 
+        if (sr) setSessions(JSON.parse(sr.value));
+      } catch {}
+      try {
+        const pr = await window.storage.get(KEY_POOL);
+        if (pr) setPool(JSON.parse(pr.value));
+      } catch {}
+      try {
+        const ir = await window.storage.get(KEY_PID);
+        if (ir) setPid(ir.value);
+      } catch {}
+      setLoading(false);
+    }
+    load();
+  }, []);
+
+  // Persist sessions
+  const saveSessions = useCallback(async (arr) => {
+    setSessions(arr);
+    try { await window.storage.set(KEY_SESSIONS, JSON.stringify(arr)); } catch(e) { console.error(e); }
+  }, []);
+
+  const savePool = useCallback(async (arr) => {
+    setPool(arr);
+    try { await window.storage.set(KEY_POOL, JSON.stringify(arr)); } catch(e) { console.error(e); }
+  }, []);
+
+  const savePid = useCallback(async (id) => {
+    setPid(id);
+    try { await window.storage.set(KEY_PID, id); } catch(e) { console.error(e); }
+  }, []);
+
+  // ── Dose calculation ──
+  const compute = useCallback(() => {
+    let tempC, tempEff, devLabel, warnings = [], hazards = [];
+
+    if (devCat === "510") {
+      const mat = coil510 === "ccell" ? "ceramic" : coil510 === "quartz" ? "quartz" : "cotton";
+      const w = (volt510 * volt510) / res510;
+      tempC = wToTemp(w); tempEff = tempEfficiency(tempC, mat);
+      devLabel = `510 ${coil510} ${volt510}V`;
+    } else if (devCat === "pod") {
+      const pd = podProfiles[podDev];
+      const w = podW === "auto" ? (pd?.dW[podRes] || 14) : parseFloat(podW);
+      tempC = wToTemp(w); tempEff = tempEfficiency(tempC, "ceramic");
+      devLabel = `Pod ${pd?.label} ${podRes}Ω`;
+    } else if (devCat === "erig") {
+      const ep = erigProfiles[erigDev];
+      if (ep.tc) {
+        tempC = erigTC;
+        const mat = erigDev.includes("daab") || erigDev.includes("dabber") ? "ss316l" : "ceramic";
+        tempEff = tempEfficiency(tempC, mat) * ep.eff / 0.90;
+      } else {
+        tempC = ep.tempC; tempEff = ep.eff;
+      }
+      devLabel = ep.label;
+      if (erigDev === "yocan_orbit_mid") hazards.push("Orbit 3.7V above DMT combustion threshold — use White (3.4V) only.");
+      if (erigDev === "yocan_orbit_high") hazards.push("Orbit 4.0V: heavy combustion — use White (3.4V) only.");
+    } else if (devCat === "emesh") {
+      const tSet = meshTemp;
+      let eff = meshFine;
+      if (tSet < 170) eff *= 0.80; else if (tSet > 220) eff *= 0.85;
+      const fin = meshMg * eff * inhale * holdT;
+      return { mg: fin, lo: fin * 0.82, hi: fin * 1.18, tempC: tSet, tempEff: eff, devLabel: "E-mesh RDA", warnings: [], hazards: ["E-mesh: pre-load before attack onset — loading powder at Kip 8 is not feasible."] };
+    } else if (devCat === "subohm") {
+      const sp = sohmProfiles[sohmDev];
+      tempC = wToTemp(soW); tempEff = tempEfficiency(tempC, sp.coil) * sp.eff / 0.90;
+      devLabel = sp.label;
+    } else if (devCat === "tc") {
+      tempC = tcTemp; tempEff = tempEfficiency(tempC, "ceramic"); devLabel = "TC vaporizer";
+    } else if (devCat === "glass") {
+      tempC = 480; tempEff = glassExp; devLabel = "Glass pipe + torch";
+      hazards.push("Glass + torch not recommended during active CH attack — burn and fall risk.");
+    } else {
+      const w = (cV * cV) / cR;
+      tempC = wToTemp(w); tempEff = tempEfficiency(tempC, cMat); devLabel = "Custom device";
+    }
+
+    if (tempC < 160) warnings.push("Temperature below DMT vaporization point — insufficient vapor.");
+    if (tempC > 220 && devCat !== "glass") warnings.push("Above combustion threshold — DMT degrading into byproducts.");
+    if (interval === 0.7) warnings.push("Chain vaping: DMT onset 30–60 sec — dose stacking risk.");
+
+    const totalMg = vol * conc;
+    const mgPP = totalMg / ppc;
+    const att = puffs * mgPP;
+    const aT = att * tempEff;
+    const aC = aT * carrier;
+    const aCr = aC * Math.min(1.0, crys + warm);
+    const aI = aCr * pdur * inhale;
+    const aH = aI * holdT;
+    const fin = aH * interval;
+
+    if (fin > 25) warnings.push("Breakthrough range — reduce puffs or concentration for CH abort context.");
+    if (conc > 200 && devCat === "pod") warnings.push("Concentration >200mg/ml risks pod coil burnout — use 75–150mg/ml in pods.");
+
+    return { mg: fin, lo: fin * 0.7, hi: fin * 1.4, tempC, tempEff, devLabel, warnings, hazards,
+             breakdown: { totalMg, mgPP, att, aT, aC, aCr, aI, aH, fin } };
+  }, [devCat, coil510, res510, volt510, podDev, podRes, podW, erigDev, erigTC, meshFine, meshTemp, meshMg, sohmDev, soW, tcTemp, glassExp, cV, cR, cMat, vol, conc, carrier, crys, warm, inhale, pdur, holdT, puffs, interval, ppc]);
+
+  const result = compute();
+  const zone = doseZone(result.mg);
+
+  // ── Save session ──
+  const handleSave = async () => {
+    const entry = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      ts: new Date().toISOString(),
+      pid: pid || "anonymous",
+      device: result.devLabel,
+      tempC: result.tempC,
+      tempEffPct: Math.round(result.tempEff * 100),
+      mgEst: Math.round(result.mg * 10) / 10,
+      mgLo: Math.round(result.lo * 10) / 10,
+      mgHi: Math.round(result.hi * 10) / 10,
+      zone: zone.label,
+      // Clinical fields
+      onsetToVape: logOnsetToVape,
+      kipAtVape: logKipAtVape,
+      kipPeak: logKipPeak,
+      outcome: logOutcome,
+      timeToEffect: logTimeToEffect,
+      intensity: logIntensity,
+      sitter: logSitter,
+      physicalFx: logPhysical,
+      mentalFx: logMental,
+      notes: logNotes.trim(),
+      devCat,
+    };
+    const updated = [entry, ...sessions];
+    await saveSessions(updated);
+    setLogNotes("");
+    setLogPhysical([]);
+    setLogMental([]);
+    setSaveMsg(`✓ Saved — ${entry.mgEst}mg est. · ${entry.outcome} · ${new Date().toLocaleTimeString()}`);
+    setTimeout(() => setSaveMsg(""), 5000);
+  };
+
+  // ── Share to pool ──
+  const handleShare = async () => {
+    const existingIds = new Set(pool.map(p => p.id));
+    const toAdd = sessions.filter(s => !existingIds.has(s.id));
+    if (!toAdd.length) { alert("All your sessions are already in the pool."); return; }
+    const newEntries = await Promise.all(toAdd.map(async (s) => ({
+      id: s.id, ts: s.ts,
+      pid: await hashPassphrase(s.pid),
+      device: s.device, tempC: s.tempC, tempEffPct: s.tempEffPct,
+      mgEst: s.mgEst, zone: s.zone,
+      onsetToVape: s.onsetToVape, kipAtVape: s.kipAtVape, kipPeak: s.kipPeak,
+      outcome: s.outcome, intensity: s.intensity, sitter: s.sitter,
+      physicalFx: s.physicalFx, mentalFx: s.mentalFx,
+    })));
+    const updated = [...newEntries, ...pool];
+    await savePool(updated);
+    alert(`Shared ${toAdd.length} session${toAdd.length !== 1 ? "s" : ""} to the community dataset. Thank you.`);
+  };
+
+  // ── Export CSV ──
+  const exportCSV = () => {
+    const headers = [
+      "timestamp","participant_id","device","temp_c","temp_eff_pct",
+      "mg_est","mg_lo","mg_hi","zone",
+      "onset_to_first_vape","kip_at_first_vape","kip_at_peak",
+      "outcome","time_to_effect","psychedelic_intensity_0_10","sitter_present",
+      "physical_side_effects","mental_side_effects","notes"
+    ];
+    const rows = sessions.map(s => [
+      s.ts, s.pid, s.device, s.tempC, s.tempEffPct,
+      s.mgEst, s.mgLo, s.mgHi, s.zone,
+      s.onsetToVape, s.kipAtVape, s.kipPeak,
+      s.outcome, s.timeToEffect, s.intensity, s.sitter,
+      `"${(s.physicalFx||[]).join("; ")}"`,
+      `"${(s.mentalFx||[]).join("; ")}"`,
+      `"${(s.notes||"").replace(/"/g, "'")}"`
+    ]);
+    const csv = [headers, ...rows].map(r => r.join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.download = "ch_dmt_sessions.csv"; a.click();
+  };
+
+  // ── Rendering helpers ──
+  const Lbl = ({ children }) => <div style={S.cl}>{children}</div>;
+  const Card = ({ children, style }) => <div style={{ ...S.card, ...style }}>{children}</div>;
+
+  const outcomeColors = {
+    complete:    { background: "#e1f5ee", color: "#0f6e56" },
+    significant: { background: "#e6f1fb", color: "#185fa5" },
+    partial:     { background: "#faeeda", color: "#854f0b" },
+    none:        { background: "#f0efec", color: "#52514e" },
+    worsened:    { background: "#fdf0f0", color: "#7a1f1f" },
+    toointense:  { background: "#eeedfe", color: "#3c3489" },
+    adverse:     { background: "#fcebeb", color: "#a32d2d" },
+  };
+  const outcomeLabels = {
+    complete:    "Complete abort",
+    significant: "Significant reduction",
+    partial:     "Partial reduction",
+    none:        "No effect",
+    worsened:    "Attack worsened",
+    toointense:  "Too intense to assess",
+    adverse:     "Adverse experience",
+  };
+
+  // Kip scale with descriptors for accurate self-rating
+  const KIP_OPTIONS = [
+    { v: "1",  label: "Kip 1 — very mild, barely noticeable" },
+    { v: "2",  label: "Kip 2 — mild, can ignore with effort" },
+    { v: "3",  label: "Kip 3 — mild, annoying, affects concentration" },
+    { v: "4",  label: "Kip 4 — moderate, can be put aside" },
+    { v: "5",  label: "Kip 5 — moderate, cannot be ignored, limits activity" },
+    { v: "6",  label: "Kip 6 — strong, affects all activities, agitation begins" },
+    { v: "7",  label: "Kip 7 — severe, pacing, cannot sit still" },
+    { v: "8",  label: "Kip 8 — intensely severe, cannot function at all" },
+    { v: "9",  label: "Kip 9 — agonizing, screaming or crying, suicidal thoughts" },
+    { v: "10", label: "Kip 10 — worst imaginable, wanting to end everything" },
+  ];
+
+  // Onset-to-vape timing options
+  const ONSET_OPTIONS = [
+    { v: "shadow",  label: "During shadow / warning signs (pre-attack)" },
+    { v: "under2",  label: "Under 2 min from onset" },
+    { v: "2_5",     label: "2–5 min from onset" },
+    { v: "5_15",    label: "5–15 min from onset" },
+    { v: "15_30",   label: "15–30 min from onset" },
+    { v: "30_60",   label: "30–60 min from onset" },
+    { v: "1_2hr",   label: "1–2 hours from onset (mid-attack)" },
+    { v: "2hr_plus",label: "Over 2 hours (late or tail-end)" },
+    { v: "peak",    label: "Already at or past peak" },
+    { v: "unknown", label: "Unsure / didn't track" },
+  ];
+
+  // Time-to-effect options
+  const EFFECT_OPTIONS = [
+    { v: "under30s", label: "Under 30 sec" },
+    { v: "30s_1min", label: "30 sec – 1 min" },
+    { v: "1_2min",   label: "1–2 min" },
+    { v: "2_5min",   label: "2–5 min" },
+    { v: "5min_plus",label: "Over 5 min" },
+    { v: "none",     label: "No effect on pain" },
+    { v: "delayed",  label: "Delayed — pain returned then subsided" },
+  ];
+
+  // Physical side effect options
+  const PHYSICAL_FX = [
+    { v: "coughing",      label: "Coughing during inhalation" },
+    { v: "cough_worse",   label: "Coughing worsened the attack" },
+    { v: "chest_tight",   label: "Chest tightness / airway constriction" },
+    { v: "rapid_heart",   label: "Rapid or irregular heartbeat" },
+    { v: "elevated_bp",   label: "Elevated blood pressure symptoms" },
+    { v: "nausea",        label: "Nausea" },
+    { v: "vomiting",      label: "Vomiting" },
+    { v: "dizziness",     label: "Dizziness / loss of balance" },
+    { v: "fall",          label: "Fall or near-fall during experience" },
+    { v: "loss_of_con",   label: "Loss of consciousness / passed out" },
+    { v: "resp_diff",     label: "Difficulty breathing during / after" },
+    { v: "burn",          label: "Burn injury (glass pipe)" },
+    { v: "persistent_phys", label: "Persistent physical effects (>24hr)" },
+    { v: "med_attention", label: "Required medical attention" },
+  ];
+
+  // Mental / psychological side effect options
+  const MENTAL_FX = [
+    { v: "panic",         label: "Acute panic or terror" },
+    { v: "confusion",     label: "Confused about being in CH abort" },
+    { v: "existential",   label: "Existential dread / feeling of dying" },
+    { v: "cannot_comm",   label: "Unable to communicate if something went wrong" },
+    { v: "paranoia",      label: "Paranoia during or after" },
+    { v: "distressing_vis", label: "Distressing visuals or thought content" },
+    { v: "reintegration", label: "Difficulty re-integrating / prolonged confusion" },
+    { v: "dissociation",  label: "Dissociation lasting more than 2 hours" },
+    { v: "depression",    label: "Depression or low mood in days following" },
+    { v: "anxiety",       label: "Increased anxiety in days following" },
+    { v: "ptsd_like",     label: "PTSD-like re-experiencing of the DMT event" },
+    { v: "depersonalize", label: "Depersonalization / derealization (lasting)" },
+    { v: "positive_lasting", label: "Positive lasting psychological effects" },
+  ];
+
+  // Toggle helpers for multi-select
+  const toggleFx = (arr, setArr, val) => {
+    setArr(arr.includes(val) ? arr.filter(x => x !== val) : [...arr, val]);
+  };
+
+  const kipLabels = Object.fromEntries(KIP_OPTIONS.map(o => [o.v, `Kip ${o.v}`]));
+
+  if (loading) return <div style={{ padding: "2rem", color: "#898781", textAlign: "center" }}>Loading your data…</div>;
+
+  return (
+    <div style={S.app}>
+      {/* Tabs */}
+      <div style={S.tabs}>
+        {[["calc","Calculator + Log"],["mydata","My sessions"],["aggregate","Community data"],["id","Participant ID"]].map(([k,lbl]) => (
+          <div key={k} style={{ ...S.tab, ...(tab === k ? S.tabActive : {}) }} onClick={() => setTab(k)}>{lbl}</div>
+        ))}
+      </div>
+
+      {/* ── CALCULATOR TAB ── */}
+      {tab === "calc" && (
+        <div>
+          {/* ID Banner */}
+          <Card style={{ marginBottom: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 11, color: "#898781", textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600, minWidth: 100 }}>Participant ID</div>
+              {pid
+                ? <div style={{ ...S.mono, fontSize: 15, fontWeight: 600, color: "#0b0b0b" }}>{pid}</div>
+                : <div style={{ fontSize: 12, color: "#898781" }}>No ID set — <span style={{ color: "#2a78d6", cursor: "pointer" }} onClick={() => setTab("id")}>create one</span> to link sessions across visits</div>
+              }
+              <button style={{ ...S.btn, ...S.btnSm, marginLeft: "auto" }} onClick={() => setTab("id")}>Manage ID →</button>
+            </div>
+          </Card>
+
+          {/* Main calc grid */}
+          <div style={S.grid2}>
+            <div>
+              <Card>
+                <Lbl>Device & mixture</Lbl>
+                <label style={S.label}>Device category</label>
+                <select style={S.select} value={devCat} onChange={e => setDevCat(e.target.value)}>
+                  <option value="510">510-thread cart + battery (most common)</option>
+                  <option value="pod">Pod system (XROS, Xlim, Caliburn…)</option>
+                  <option value="erig">E-rig / TC wax device (Ispire Daab, Yocan Orbit…)</option>
+                  <option value="emesh">E-Mesh RDA — direct freebase (most efficient)</option>
+                  <option value="subohm">Sub-ohm tank / RTA</option>
+                  <option value="tc">Dedicated TC vaporizer (Mighty, Volcano…)</option>
+                  <option value="glass">Glass pipe + torch</option>
+                  <option value="custom">Custom — manual specs</option>
+                </select>
+
+                {devCat === "510" && <>
+                  <label style={S.label}>Coil type</label>
+                  <select style={S.select} value={coil510} onChange={e => setCoil510(e.target.value)}>
+                    <option value="ccell">CCELL ceramic (recommended)</option>
+                    <option value="quartz">Quartz coil</option>
+                    <option value="cotton">Cotton wick</option>
+                  </select>
+                  <label style={S.label}>Resistance (Ω)</label>
+                  <select style={S.select} value={res510} onChange={e => setRes510(parseFloat(e.target.value))}>
+                    <option value="0.5">0.5Ω sub-ohm</option><option value="1.0">1.0Ω standard</option>
+                    <option value="1.5">1.5Ω</option><option value="2.0">2.0Ω</option>
+                  </select>
+                  <label style={S.label}>Battery voltage</label>
+                  <select style={S.select} value={volt510} onChange={e => setVolt510(parseFloat(e.target.value))}>
+                    <option value="2.4">2.4V — cool</option><option value="2.8">2.8V — optimal</option>
+                    <option value="3.2">3.2V — mid</option><option value="3.4">3.4V</option>
+                    <option value="3.6">3.6V — combustion begins</option><option value="4.0">4.0V — significant combustion</option>
+                  </select>
+                </>}
+
+                {devCat === "pod" && <>
+                  <label style={S.label}>Pod device</label>
+                  <select style={S.select} value={podDev} onChange={e => setPodDev(e.target.value)}>
+                    {Object.entries(podProfiles).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                  </select>
+                  <label style={S.label}>Pod resistance</label>
+                  <select style={S.select} value={podRes} onChange={e => setPodRes(parseFloat(e.target.value))}>
+                    <option value="0.4">0.4Ω (RDTL — hot)</option><option value="0.6">0.6Ω</option>
+                    <option value="0.8">0.8Ω (standard MTL)</option><option value="1.0">1.0Ω (cool)</option>
+                  </select>
+                  <label style={S.label}>Wattage override</label>
+                  <select style={S.select} value={podW} onChange={e => setPodW(e.target.value)}>
+                    <option value="auto">Auto (device default)</option>
+                    {[8,10,12,14,16,20,25,30].map(w => <option key={w} value={w}>{w}W</option>)}
+                  </select>
+                </>}
+
+                {devCat === "erig" && <>
+                  <label style={S.label}>Device</label>
+                  <select style={S.select} value={erigDev} onChange={e => setErigDev(e.target.value)}>
+                    {Object.entries(erigProfiles).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                  </select>
+                  {erigProfiles[erigDev]?.tc && <>
+                    <label style={S.label}>Set temperature: {erigTC}°C</label>
+                    <input type="range" style={{ width: "100%" }} min={120} max={280} step={5} value={erigTC} onChange={e => setErigTC(parseInt(e.target.value))} />
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#898781" }}><span>120°C</span><span>280°C</span></div>
+                  </>}
+                </>}
+
+                {devCat === "emesh" && <>
+                  <label style={S.label}>Mesh fineness</label>
+                  <select style={S.select} value={meshFine} onChange={e => setMeshFine(parseFloat(e.target.value))}>
+                    <option value="0.91">150 mesh</option><option value="0.93">200 mesh (standard)</option><option value="0.95">400 mesh</option>
+                  </select>
+                  <label style={S.label}>TC temperature: {meshTemp}°C</label>
+                  <input type="range" style={{ width: "100%" }} min={160} max={230} step={5} value={meshTemp} onChange={e => setMeshTemp(parseInt(e.target.value))} />
+                  <label style={S.label}>DMT loaded — freebase powder (mg)</label>
+                  <input type="number" style={S.input} value={meshMg} onChange={e => setMeshMg(parseFloat(e.target.value) || 15)} min={5} max={60} />
+                </>}
+
+                {devCat === "subohm" && <>
+                  <label style={S.label}>Device</label>
+                  <select style={S.select} value={sohmDev} onChange={e => setSohmDev(e.target.value)}>
+                    {Object.entries(sohmProfiles).map(([k,v]) => <option key={k} value={k}>{v.label}</option>)}
+                  </select>
+                  <label style={S.label}>Wattage</label>
+                  <select style={S.select} value={soW} onChange={e => setSoW(parseInt(e.target.value))}>
+                    {[15,18,20,25,30,35].map(w => <option key={w} value={w}>{w}W</option>)}
+                  </select>
+                </>}
+
+                {devCat === "tc" && <>
+                  <label style={S.label}>Set temperature: {tcTemp}°C</label>
+                  <input type="range" style={{ width: "100%" }} min={140} max={240} step={5} value={tcTemp} onChange={e => setTcTemp(parseInt(e.target.value))} />
+                </>}
+
+                {devCat === "glass" && <>
+                  <label style={S.label}>Experience level</label>
+                  <select style={S.select} value={glassExp} onChange={e => setGlassExp(parseFloat(e.target.value))}>
+                    <option value="0.28">Novice (~28% efficiency)</option>
+                    <option value="0.38">Experienced (~38%)</option>
+                    <option value="0.45">Expert (~45%)</option>
+                  </select>
+                </>}
+
+                {devCat === "custom" && <>
+                  <label style={S.label}>Voltage (V)</label>
+                  <input type="number" style={S.input} value={cV} onChange={e => setCV(parseFloat(e.target.value))} min={2} max={5} step={0.1} />
+                  <label style={S.label}>Resistance (Ω)</label>
+                  <input type="number" style={S.input} value={cR} onChange={e => setCR(parseFloat(e.target.value))} min={0.1} max={3} step={0.1} />
+                  <label style={S.label}>Coil material</label>
+                  <select style={S.select} value={cMat} onChange={e => setCMat(e.target.value)}>
+                    <option value="ceramic">Ceramic/CCELL</option><option value="ss316l">SS316L mesh</option>
+                    <option value="quartz">Quartz</option><option value="cotton">Cotton</option>
+                  </select>
+                </>}
+
+                {devCat !== "emesh" && <>
+                  <div style={{ borderTop: "1px solid #e0dfd9", margin: "12px 0 8px" }} />
+                  <label style={{ ...S.label, marginTop: 0 }}>Liquid volume (ml)</label>
+                  <select style={S.select} value={vol} onChange={e => setVol(parseFloat(e.target.value))}>
+                    <option value="0.5">0.5ml</option><option value="1.0">1.0ml (510 cart)</option>
+                    <option value="1.5">1.5ml</option><option value="2.0">2.0ml (pod)</option><option value="3.0">3.0ml (tank)</option>
+                  </select>
+                  <label style={S.label}>Concentration (mg/ml)</label>
+                  <select style={S.select} value={conc} onChange={e => setConc(parseFloat(e.target.value))}>
+                    {[75,125,200,250,350,500].map(c => <option key={c} value={c}>{c} mg/ml{c===250?" (1:3 standard)":""}</option>)}
+                  </select>
+                  <label style={S.label}>Carrier</label>
+                  <select style={S.select} value={carrier} onChange={e => setCarrier(parseFloat(e.target.value))}>
+                    <option value="1.0">PG only</option><option value="0.93">50/50 PG/VG</option><option value="0.85">High VG</option>
+                  </select>
+                  <label style={S.label}>Crystallization</label>
+                  <select style={S.select} value={crys} onChange={e => setCrys(parseFloat(e.target.value))}>
+                    <option value="1.0">None</option><option value="0.95">Occasional</option><option value="0.85">Frequent</option>
+                  </select>
+                  <label style={S.label}>Pre-warmed?</label>
+                  <select style={S.select} value={warm} onChange={e => setWarm(parseFloat(e.target.value))}>
+                    <option value="0">No</option><option value="0.08">Yes</option>
+                  </select>
+                </>}
+              </Card>
+
+              <Card>
+                <Lbl>Technique</Lbl>
+                <label style={S.label}>Inhalation style</label>
+                <select style={S.select} value={inhale} onChange={e => setInhale(parseFloat(e.target.value))}>
+                  <option value="0.65">Mouth-to-lung (MTL) — ~55ml/puff</option>
+                  <option value="0.76">Restricted DTL</option>
+                  <option value="0.88">Direct-to-lung (DTL) — ~500ml/puff</option>
+                  <option value="0.75">Mixed/unsure</option>
+                </select>
+                <label style={S.label}>Puff duration</label>
+                <select style={S.select} value={pdur} onChange={e => setPdur(parseFloat(e.target.value))}>
+                  <option value="0.6">Under 2 sec</option><option value="0.8">2–3 sec</option>
+                  <option value="1.0">3–5 sec (recommended)</option><option value="1.1">5–7 sec</option>
+                </select>
+                <label style={S.label}>Hold time</label>
+                <select style={S.select} value={holdT} onChange={e => setHoldT(parseFloat(e.target.value))}>
+                  <option value="0.45">Immediate exhale</option><option value="0.65">Under 5 sec</option>
+                  <option value="0.80">5–10 sec</option><option value="0.92">10–15 sec</option>
+                  <option value="1.00">15+ sec (max absorption)</option>
+                </select>
+                {devCat !== "emesh" && <>
+                  <label style={S.label}>Number of puffs: {puffs}</label>
+                  <input type="range" style={{ width: "100%" }} min={1} max={6} step={1} value={puffs} onChange={e => setPuffs(parseInt(e.target.value))} />
+                  <label style={S.label}>Interval between puffs</label>
+                  <select style={S.select} value={interval} onChange={e => setIntervalV(parseFloat(e.target.value))}>
+                    <option value="0.7">Chain vaped — no wait</option>
+                    <option value="0.9">15–30 sec</option>
+                    <option value="1.0">60–90 sec (onset check)</option>
+                  </select>
+                  <label style={S.label}>Est. puffs per full load</label>
+                  <select style={S.select} value={ppc} onChange={e => setPpc(parseInt(e.target.value))}>
+                    {[15,25,40,60,80].map(n => <option key={n} value={n}>~{n} puffs</option>)}
+                  </select>
+                </>}
+              </Card>
+            </div>
+
+            <div>
+              <Card style={{ textAlign: "center" }}>
+                <Lbl>Estimated bioavailable DMT</Lbl>
+                <div style={{ height: 16, background: "#f0efec", borderRadius: 8, overflow: "hidden", margin: "8px 0" }}>
+                  <div style={{ height: "100%", width: `${Math.min(100,(result.mg/40)*100)}%`, background: zone.color, borderRadius: 8, transition: "width .3s, background .3s" }} />
+                </div>
+                <div style={{ ...S.mono, fontSize: 28, fontWeight: 600, color: "#0b0b0b" }}>{result.mg.toFixed(1)}</div>
+                <div style={{ fontSize: 12, color: "#52514e", marginTop: 2 }}>mg estimated</div>
+                <div style={{ fontSize: 11, color: "#898781", marginTop: 4 }}>range: {result.lo.toFixed(1)}–{result.hi.toFixed(1)} mg</div>
+                <div style={{ display: "inline-block", fontSize: 11, padding: "3px 10px", borderRadius: 20, fontWeight: 600, marginTop: 8, background: zone.color + "25", color: zone.color }}>{zone.label}</div>
+
+                <div style={{ display: "flex", borderRadius: 5, overflow: "hidden", height: 6, margin: "10px 0 3px" }}>
+                  <div style={{ background: "#1baf7a", flex: 15 }} /><div style={{ background: "#2a78d6", flex: 20 }} />
+                  <div style={{ background: "#eda100", flex: 15 }} /><div style={{ background: "#e34948", flex: 10 }} />
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#898781", marginBottom: 10 }}>
+                  <span>Sub-threshold<br/>&lt;5mg</span>
+                  <span style={{ textAlign: "center" }}>Abort window<br/>5–15mg</span>
+                  <span style={{ textAlign: "center" }}>Moderate<br/>15–25mg</span>
+                  <span style={{ textAlign: "right" }}>Breakthrough<br/>&gt;25mg</span>
+                </div>
+
+                {/* Temp readout */}
+                <div style={{ background: "#f8f8f6", borderRadius: 7, padding: "7px 10px", fontSize: 11, textAlign: "left", lineHeight: 1.7, color: "#52514e" }}>
+                  <span style={{ fontWeight: 600, color: result.tempC < 160 ? "#eda100" : result.tempC <= 215 ? "#1baf7a" : result.tempC <= 230 ? "#eda100" : "#e34948" }}>~{result.tempC}°C</span>
+                  {" "}— Efficiency: <strong>{result.tempEff.toFixed(2)}</strong> ({Math.round(result.tempEff*100)}% DMT preserved)
+                </div>
+
+                {result.warnings.map((w,i) => <div key={i} style={S.warn}>⚠ {w}</div>)}
+                {result.hazards.map((h,i)  => <div key={i} style={S.haz}>🛑 {h}</div>)}
+              </Card>
+
+              {/* Breakdown */}
+              <Card>
+                <Lbl>Calculation breakdown</Lbl>
+                {result.breakdown && (() => {
+                  const b = result.breakdown;
+                  const Row = ({ l, v, penalty }) => (
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: penalty ? "#854f0b" : "#52514e", padding: "1px 0" }}>
+                      <span>{l}</span><span style={{ ...S.mono, fontSize: 11, color: penalty ? "#854f0b" : "#0b0b0b" }}>{v}</span>
+                    </div>
+                  );
+                  return <>
+                    <Row l={`Total (${vol}ml × ${conc}mg/ml)`} v={`${b.totalMg.toFixed(0)}mg`} />
+                    <Row l={`Per puff (÷${ppc})`} v={`${b.mgPP.toFixed(2)}mg`} />
+                    <Row l={`× ${puffs} puffs`} v={`${b.att.toFixed(2)}mg`} />
+                    <div style={{ borderTop: "1px solid #e0dfd9", margin: "4px 0" }} />
+                    <Row l={`× temp efficiency (${result.tempEff.toFixed(2)})`} v={`${b.aT.toFixed(2)}mg`} penalty />
+                    <Row l={`× carrier (${carrier})`} v={`${b.aC.toFixed(2)}mg`} penalty />
+                    <Row l={`× crystallization (${Math.min(1,(crys+warm)).toFixed(2)})`} v={`${b.aCr.toFixed(2)}mg`} penalty />
+                    <Row l={`× dur×inhale (${(pdur*inhale).toFixed(2)})`} v={`${b.aI.toFixed(2)}mg`} penalty />
+                    <Row l={`× hold (${holdT})`} v={`${b.aH.toFixed(2)}mg`} penalty />
+                    <Row l={`× interval (${interval})`} v="" penalty />
+                    <div style={{ borderTop: "1px solid #e0dfd9", margin: "4px 0" }} />
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 600, paddingTop: 4 }}>
+                      <span>Bioavailable est.</span><span style={S.mono}>{result.mg.toFixed(1)}mg</span>
+                    </div>
+                    <div style={{ fontSize: 10, color: "#898781", marginTop: 4 }}>Range: {result.lo.toFixed(1)}–{result.hi.toFixed(1)}mg (±30–40%)</div>
+                  </>;
+                })()}
+              </Card>
+            </div>
+          </div>
+
+          {/* Log session */}
+          <Card>
+            <Lbl>Log this abort attempt</Lbl>
+
+            {/* Row 1: Timing */}
+            <div style={S.grid2}>
+              <div>
+                <label style={S.label}>Time from attack onset to first inhale</label>
+                <select style={S.select} value={logOnsetToVape} onChange={e => setLogOnsetToVape(e.target.value)}>
+                  {ONSET_OPTIONS.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
+                </select>
+                <label style={{ ...S.label, marginTop: 10 }}>Time from first inhale to pain change</label>
+                <select style={S.select} value={logTimeToEffect} onChange={e => setLogTimeToEffect(e.target.value)}>
+                  {EFFECT_OPTIONS.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={S.label}>Kip scale at first inhale</label>
+                <select style={S.select} value={logKipAtVape} onChange={e => setLogKipAtVape(e.target.value)}>
+                  {KIP_OPTIONS.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
+                </select>
+                <label style={{ ...S.label, marginTop: 10 }}>Kip scale at attack peak (this attack)</label>
+                <select style={S.select} value={logKipPeak} onChange={e => setLogKipPeak(e.target.value)}>
+                  {KIP_OPTIONS.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
+                </select>
+              </div>
+            </div>
+
+            {/* Row 2: Outcome + intensity */}
+            <div style={{ ...S.grid2, marginTop: 4 }}>
+              <div>
+                <label style={S.label}>Abort outcome</label>
+                <select style={S.select} value={logOutcome} onChange={e => setLogOutcome(e.target.value)}>
+                  <option value="complete">✓ Complete abort — pain to zero</option>
+                  <option value="significant">↓ Significant reduction (Kip dropped 4+)</option>
+                  <option value="partial">↓ Partial reduction (Kip dropped 1–3)</option>
+                  <option value="none">— No effect on pain</option>
+                  <option value="worsened">↑ Attack worsened after DMT</option>
+                  <option value="toointense">? Too intense to assess — unable to track pain</option>
+                  <option value="adverse">⚠ Primarily adverse experience</option>
+                </select>
+                <label style={{ ...S.label, marginTop: 10 }}>Sitter present?</label>
+                <select style={S.select} value={logSitter} onChange={e => setLogSitter(e.target.value)}>
+                  <option value="yes">Yes — designated sitter</option>
+                  <option value="nearby">Someone nearby but not a sitter</option>
+                  <option value="no">No — alone</option>
+                </select>
+              </div>
+              <div>
+                <label style={S.label}>Psychedelic intensity experienced: {logIntensity}/10</label>
+                <input type="range" style={{ width: "100%", marginBottom: 2 }} min={0} max={10} step={1}
+                  value={logIntensity} onChange={e => setLogIntensity(parseInt(e.target.value))} />
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#898781", marginBottom: 8 }}>
+                  <span>0 — no effect</span>
+                  <span>5 — strong</span>
+                  <span>10 — breakthrough</span>
+                </div>
+                <div style={{ background: "#f8f8f6", borderRadius: 6, padding: "6px 10px", fontSize: 11, color: "#52514e", lineHeight: 1.5 }}>
+                  {logIntensity <= 1 && "No perceptual change — colors / body sensation unchanged"}
+                  {logIntensity >= 2 && logIntensity <= 3 && "Mild — slight color enhancement, body sensation, room awareness fully intact"}
+                  {logIntensity >= 4 && logIntensity <= 5 && "Moderate — noticeable visual/auditory changes, aware of room"}
+                  {logIntensity >= 6 && logIntensity <= 7 && "Strong — significant alteration, borderline loss of room awareness"}
+                  {logIntensity >= 8 && logIntensity <= 9 && "Very strong — partial or full loss of room awareness"}
+                  {logIntensity === 10 && "Breakthrough — complete ego dissolution, full loss of ordinary consciousness"}
+                </div>
+              </div>
+            </div>
+
+            {/* Row 3: Physical side effects */}
+            <div style={{ marginTop: 12 }}>
+              <label style={{ ...S.label, marginTop: 0, fontWeight: 600, color: "#0b0b0b" }}>
+                Physical side effects <span style={{ fontWeight: 400, color: "#898781" }}>(select all that apply — none is a valid answer)</span>
+              </label>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+                {PHYSICAL_FX.map(fx => {
+                  const selected = logPhysical.includes(fx.v);
+                  return (
+                    <div key={fx.v} onClick={() => toggleFx(logPhysical, setLogPhysical, fx.v)}
+                      style={{ fontSize: 11, padding: "4px 10px", borderRadius: 20, cursor: "pointer", userSelect: "none",
+                        background: selected ? "#fcebeb" : "#f0efec",
+                        color: selected ? "#a32d2d" : "#52514e",
+                        border: selected ? "1px solid #e34948" : "1px solid #e0dfd9",
+                        fontWeight: selected ? 600 : 400,
+                      }}>
+                      {selected ? "✓ " : ""}{fx.label}
+                    </div>
+                  );
+                })}
+              </div>
+              {logPhysical.length === 0 && (
+                <div style={{ fontSize: 11, color: "#898781", marginTop: 6 }}>None selected — click to select any that apply</div>
+              )}
+            </div>
+
+            {/* Row 4: Mental / psychological side effects */}
+            <div style={{ marginTop: 12 }}>
+              <label style={{ ...S.label, marginTop: 0, fontWeight: 600, color: "#0b0b0b" }}>
+                Psychological side effects <span style={{ fontWeight: 400, color: "#898781" }}>(select all that apply)</span>
+              </label>
+              <div style={{ background: "#faeeda", borderRadius: 6, padding: "7px 10px", fontSize: 11, color: "#854f0b", lineHeight: 1.5, marginBottom: 8, marginTop: 6 }}>
+                ⚠ A CH attack is a uniquely challenging mental state for a DMT experience. Difficult psychological experiences here are important data — not failures. Your candid report helps make this safer for others.
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {MENTAL_FX.map(fx => {
+                  const selected = logMental.includes(fx.v);
+                  return (
+                    <div key={fx.v} onClick={() => toggleFx(logMental, setLogMental, fx.v)}
+                      style={{ fontSize: 11, padding: "4px 10px", borderRadius: 20, cursor: "pointer", userSelect: "none",
+                        background: selected
+                          ? fx.v === "positive_lasting" ? "#e1f5ee" : "#eeedfe"
+                          : "#f0efec",
+                        color: selected
+                          ? fx.v === "positive_lasting" ? "#0f6e56" : "#3c3489"
+                          : "#52514e",
+                        border: selected
+                          ? fx.v === "positive_lasting" ? "1px solid #1baf7a" : "1px solid #534ab7"
+                          : "1px solid #e0dfd9",
+                        fontWeight: selected ? 600 : 400,
+                      }}>
+                      {selected ? "✓ " : ""}{fx.label}
+                    </div>
+                  );
+                })}
+              </div>
+              {logMental.length === 0 && (
+                <div style={{ fontSize: 11, color: "#898781", marginTop: 6 }}>None selected</div>
+              )}
+            </div>
+
+            {/* Notes */}
+            <div style={{ marginTop: 12 }}>
+              <label style={{ ...S.label, marginTop: 0 }}>
+                Notes <span style={{ color: "#898781", fontWeight: 400 }}>(optional — anything not captured above, especially around difficult experiences)</span>
+              </label>
+              <textarea style={S.textarea} value={logNotes} onChange={e => setLogNotes(e.target.value)}
+                placeholder="What helped? What made it harder? What would you tell someone else? Adverse experiences especially welcome — your experience protects the next person." />
+            </div>
+
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12, flexWrap: "wrap" }}>
+              <button style={{ ...S.btn, ...S.btnPrimary }} onClick={handleSave}>💾 Save this session</button>
+              <div style={{ fontSize: 11, color: "#898781" }}>Saves to your account, linked to your participant ID</div>
+            </div>
+            {saveMsg && (
+              <div style={{ background: "#e1f5ee", border: "1px solid #1baf7a", borderRadius: 7, padding: "7px 11px", fontSize: 12, color: "#0f6e56", marginTop: 8 }}>
+                {saveMsg}
+              </div>
+            )}
+          </Card>
+        </div>
+      )}
+
+      {/* ── MY SESSIONS TAB ── */}
+      {tab === "mydata" && (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 500 }}>Your logged sessions <span style={{ fontSize: 11, color: "#898781", fontWeight: 400 }}>(n={sessions.length})</span></div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button style={{ ...S.btn, ...S.btnSm }} onClick={exportCSV}>Export CSV</button>
+              <button style={{ ...S.btn, ...S.btnSm, ...S.btnDanger }} onClick={async () => { if (!confirm(`Delete all ${sessions.length} sessions?`)) return; await saveSessions([]); }}>Clear all</button>
+            </div>
+          </div>
+
+          {sessions.length > 0 && (() => {
+            const mgs = sessions.map(s => s.mgEst);
+            const mean = (mgs.reduce((a,b)=>a+b,0)/mgs.length).toFixed(1);
+            const completes = sessions.filter(s => s.outcome === "complete").length;
+            const adverse = sessions.filter(s => s.outcome === "adverse").length;
+            return (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: 12 }}>
+                {[["Sessions",`n=${sessions.length}`],["Avg dose",`${mean} mg`],["Complete aborts",`${completes}/${sessions.length}`],["Adverse events",adverse]].map(([l,v],i) => (
+                  <div key={i} style={S.stat}><div style={{ fontSize: 10, color: "#898781", marginBottom: 3 }}>{l}</div><div style={{ ...S.mono, fontSize: 18, fontWeight: 500, color: i===3&&adverse>0?"#a32d2d":"#0b0b0b" }}>{v}</div></div>
+                ))}
+              </div>
+            );
+          })()}
+
+          {!sessions.length
+            ? <div style={S.empty}>No sessions logged yet — use the Calculator tab and hit Save.</div>
+            : sessions.map((s, i) => (
+              <div key={s.id} style={{ background: "#fff", border: "1px solid #e0dfd9", borderRadius: 8, padding: "10px 12px", marginBottom: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6, flexWrap: "wrap", gap: 6 }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: "#898781" }}>ID: {s.pid} · {new Date(s.ts).toLocaleDateString()} {new Date(s.ts).toLocaleTimeString()}</div>
+                    <div style={{ ...S.mono, fontSize: 18, fontWeight: 600 }}>{s.mgEst} mg <span style={{ fontSize: 12, fontWeight: 400, color: "#898781" }}>({s.mgLo}–{s.mgHi})</span></div>
+                  </div>
+                  <button style={{ ...S.btn, ...S.btnSm, ...S.btnDanger }} onClick={async () => { const updated = [...sessions]; updated.splice(i,1); await saveSessions(updated); }}>×</button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 4 }}>
+                  {[
+                    [s.outcome, outcomeColors[s.outcome]],
+                    [s.device, null],
+                    [`~${s.tempC}°C · ${s.tempEffPct}% eff`, null],
+                    [s.onsetToVape ? `Onset→vape: ${ONSET_OPTIONS.find(o=>o.v===s.onsetToVape)?.label||s.onsetToVape}` : null, null],
+                    [`Kip at vape: ${s.kipAtVape||"—"}`, null],
+                    [`Kip peak: ${s.kipPeak||"—"}`, null],
+                    [`Intensity ${s.intensity}/10`, null],
+                    [s.sitter === "yes" ? "Sitter present" : s.sitter === "nearby" ? "Someone nearby" : "Alone", null],
+                    [s.timeToEffect && s.timeToEffect !== "none" ? `Effect: ${EFFECT_OPTIONS.find(o=>o.v===s.timeToEffect)?.label||s.timeToEffect}` : null, null],
+                  ].filter(([l]) => l).map(([l, style], j) => (
+                    <span key={j} style={{ ...S.pill, ...(style || {}) }}>{l}</span>
+                  ))}
+                </div>
+                {((s.physicalFx||[]).length > 0 || (s.mentalFx||[]).length > 0) && (
+                  <div style={{ marginTop: 5 }}>
+                    {(s.physicalFx||[]).length > 0 && (
+                      <div style={{ fontSize: 10, color: "#a32d2d", marginBottom: 2 }}>
+                        ⚕ Physical: {(s.physicalFx||[]).map(v => PHYSICAL_FX.find(f=>f.v===v)?.label||v).join(" · ")}
+                      </div>
+                    )}
+                    {(s.mentalFx||[]).length > 0 && (
+                      <div style={{ fontSize: 10, color: "#3c3489" }}>
+                        ψ Psychological: {(s.mentalFx||[]).map(v => MENTAL_FX.find(f=>f.v===v)?.label||v).join(" · ")}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {s.notes && <div style={{ fontSize: 11, color: "#52514e", marginTop: 6, fontStyle: "italic", lineHeight: 1.5 }}>"{s.notes}"</div>}
+              </div>
+            ))
+          }
+        </div>
+      )}
+
+      {/* ── COMMUNITY DATA TAB ── */}
+      {tab === "aggregate" && (
+        <div>
+          <Card style={{ marginBottom: 10 }}>
+            <Lbl>Community aggregate dataset</Lbl>
+            <p style={{ fontSize: 12, color: "#52514e", lineHeight: 1.6 }}>All sessions shared to the community pool. Participant IDs are one-way hashed before sharing — not reversible. Notes are stripped. This is the seed data for the PS27 dataset.</p>
+            <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <button style={{ ...S.btn, ...S.btnSuccess }} onClick={handleShare}>Share my sessions to community pool</button>
+              <span style={{ fontSize: 11, color: "#898781" }}>Device, dose, outcome, intensity — no notes, no identifying info</span>
+            </div>
+          </Card>
+
+          {pool.length > 0 && (() => {
+            const mgs = pool.map(s => s.mgEst);
+            const mean = (mgs.reduce((a,b)=>a+b,0)/mgs.length).toFixed(1);
+            const completes = pool.filter(s => s.outcome === "complete").length;
+            const pids = new Set(pool.map(s => s.pid)).size;
+            return (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: 12 }}>
+                {[["Total sessions",`n=${pool.length}`],["Participants",`${pids}`],["Mean dose",`${mean}mg`],["Complete abort",`${Math.round(completes/pool.length*100)}%`]].map(([l,v],i) => (
+                  <div key={i} style={S.stat}><div style={{ fontSize: 10, color: "#898781", marginBottom: 3 }}>{l}</div><div style={{ ...S.mono, fontSize: 18, fontWeight: 500 }}>{v}</div></div>
+                ))}
+              </div>
+            );
+          })()}
+
+          {!pool.length
+            ? <div style={S.empty}>No community data yet — share your sessions to start the dataset.</div>
+            : pool.slice(0, 25).map((s, i) => (
+              <div key={s.id || i} style={{ background: "#fff", border: "1px solid #e0dfd9", borderRadius: 8, padding: "9px 12px", marginBottom: 7 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                  <div style={{ fontSize: 11, color: "#898781" }}>Participant: {s.pid} · {new Date(s.ts).toLocaleDateString()}</div>
+                  <div style={{ ...S.mono, fontSize: 15, fontWeight: 600 }}>{s.mgEst} mg</div>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+                  {[[s.outcome, outcomeColors[s.outcome]],[s.device,null],[`~${s.tempC}°C`,null],[`Kip@vape: ${s.kipAtVape||"—"}`,null],[`Intensity ${s.intensity}/10`,null],[s.sitter==="yes"?"Sitter":"Alone",null]].map(([l,st],j) => (
+                    <span key={j} style={{ ...S.pill, ...(st||{}) }}>{l}</span>
+                  ))}
+                </div>
+                {((s.physicalFx||[]).length > 0 || (s.mentalFx||[]).length > 0) && (
+                  <div style={{ fontSize: 10, color: "#898781", marginTop: 4 }}>
+                    {(s.physicalFx||[]).length > 0 && `⚕ ${s.physicalFx.join(", ")} `}
+                    {(s.mentalFx||[]).length > 0 && `ψ ${s.mentalFx.join(", ")}`}
+                  </div>
+                )}
+              </div>
+            ))
+          }
+          {pool.length > 25 && <div style={{ textAlign: "center", fontSize: 12, color: "#898781", padding: 8 }}>Showing 25 of {pool.length} entries</div>}
+        </div>
+      )}
+
+      {/* ── ID TAB ── */}
+      {tab === "id" && (
+        <div>
+          <Card>
+            <Lbl>Your anonymous participant ID</Lbl>
+            <p style={{ fontSize: 12, color: "#52514e", lineHeight: 1.6, marginBottom: 12 }}>Your ID is a short code you create and write down. We never ask for your name, email, or location. The same ID links your sessions across visits and devices — it's your key to your own longitudinal dataset.</p>
+
+            {pid ? (
+              <div style={S.idBox}>
+                <div style={{ fontSize: 12, color: "#898781", marginBottom: 4 }}>Your current ID</div>
+                <div style={S.idDisplay}>{pid}</div>
+                <p style={{ fontSize: 11, color: "#898781", lineHeight: 1.6, marginBottom: 10 }}>Write this down. To log from another device, enter the same ID there.</p>
+                <button style={{ ...S.btn, ...S.btnSm, ...S.btnDanger }} onClick={() => { if (confirm("Clear your participant ID? Session data stays but future sessions will be unlinked.")) savePid(""); }}>Clear ID and start fresh</button>
+              </div>
+            ) : (
+              <div style={S.idBox}>
+                <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>Create your ID</div>
+                {generatedId && <div style={S.idDisplay}>{generatedId}</div>}
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+                  <button style={S.btn} onClick={() => setGeneratedId(generatePassphrase())}>🎲 Generate random ID</button>
+                  {generatedId && <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => savePid(generatedId)}>Save this ID</button>}
+                </div>
+                <div style={{ borderTop: "1px solid #e0dfd9", paddingTop: 12 }}>
+                  <label style={{ ...S.label, marginTop: 0 }}>Or type your own</label>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input style={{ ...S.input, ...S.mono }} placeholder="e.g. thunder-copper-seven" value={pidInput} onChange={e => setPidInput(e.target.value)} />
+                    <button style={{ ...S.btn, ...S.btnPrimary }} onClick={() => { if (pidInput.trim()) savePid(pidInput.trim()); }}>Save</button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </Card>
+
+          <Card>
+            <Lbl>Privacy</Lbl>
+            <div style={{ fontSize: 12, color: "#52514e", lineHeight: 1.9 }}>
+              <strong style={{ color: "#0b0b0b" }}>What's stored:</strong> Device type, dose estimate, outcome, Kip level, intensity, sitter presence, timestamp, optional notes — in your account only.<br/>
+              <strong style={{ color: "#0b0b0b" }}>Never collected:</strong> Name, email, location, or anything identifying.<br/>
+              <strong style={{ color: "#0b0b0b" }}>When you share to the community pool:</strong> Your participant ID is one-way hashed (cannot be reversed). Notes are stripped. Only device + dose + outcome contribute.<br/>
+              <strong style={{ color: "#0b0b0b" }}>Your data, your control:</strong> Export or delete any time from My Sessions.<br/>
+              <strong style={{ color: "#0b0b0b" }}>Legal:</strong> No identifying data is collected. Harm reduction modeling tool only — not a medical device.
+            </div>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}
