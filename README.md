@@ -8,9 +8,7 @@
 [![Validation](https://img.shields.io/badge/Status-Community%20Validation-orange)]()
 
 **→ [Open the tracker](https://CHARC-ORG.github.io/ch-dmt-abort-outcome-tracker)**
-**→ [Open the tracker](https://CHARC-ORG.github.io/ch-dmt-abort-tracker)**
-**→ [Open the tracker](https://github.com/CHARC-ORG/ch-dmt-abort-outcome-tracker)**
-**→ [Open the tracker](https:/CHARC-ORG.github.io/ch-dmt-abort-outcome-tracker)**
+
 ---
 
 ## What this is
