@@ -19,8 +19,8 @@ authors:
 version: "1.0.0"
 date-released: "2025-07-01"
 license: MIT
-repository-code: "https://github.com/USERNAME/ch-dmt-abort-tracker"
-url: "https://USERNAME.github.io/ch-dmt-abort-tracker"
+repository-code: "https://github.com/CHARC-ORG/CHARC-ORG/ch-dmt-abort-outcome-tracker"
+url: "https://CHARC-ORG.github.io/ch-dmt-abort-outcome-tracker"
 keywords:
   - cluster headache
   - DMT
