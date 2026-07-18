@@ -7,7 +7,7 @@
 [![PS27](https://img.shields.io/badge/Target-Psychedelic%20Science%202027-purple)](https://psychedelicscience.org)
 [![Validation](https://img.shields.io/badge/Status-Community%20Validation-orange)]()
 
-**→ [Open the tracker](https://CHARC-ORG.github.io/ch-dmt-abort-outcome-tracker)**
+**→ [Open the tracker]([https://CHARC-ORG.github.io/ch-dmt-abort-outcome-tracker])**
 
 ---
 
@@ -126,7 +126,7 @@ device setup is estimated to exceed this, as combustion users may be reporting
 
 ## Relationship to companion tool
 
-| | [Dose Estimator](https://github.com/USERNAME/nndmt-ch-dose-estimator) | This tracker |
+| | [Dose Estimator](https://github.com/CHARC-ORG/nndmt-ch-dose-estimator) | This tracker |
 |---|---|---|
 | **Purpose** | Education, harm reduction | Research data collection |
 | **Audience** | Anyone | PS27 community participants |
@@ -179,7 +179,7 @@ Feedback actively sought on:
   year      = {2026},
   publisher = {Zenodo},
   doi       = {21421531},
-  url       = {https://github.com/CHARC-ORGE/ch-dmt-abort-tracker}
+  url       = {https://github.com/CHARC-ORG/ch-dmt-abort-tracker}
 }
 ```
 
